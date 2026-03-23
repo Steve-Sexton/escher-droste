@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escher / de Smit–Lenstra — Droste Conformal Renderer</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --panel: #141414;
+    --border: #2a2a2a;
+    --text: #e8e6e0;
+    --muted: #666;
+    --accent: #c8a96e;
+    --accent2: #7a9fb5;
+    --danger: #c0604a;
+    --mono: 'Courier New', monospace;
+    --sans: 'Georgia', serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    grid-template-columns: 340px 1fr;
+    grid-template-areas: "hdr hdr" "ctrl canvas" "ftr ftr";
+  }
+  header {
+    grid-area: hdr;
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: baseline;
+    gap: 20px;
+  }
+  header h1 { font-size: 17px; font-weight: normal; letter-spacing: 0.04em; color: var(--accent); }
+  header span { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+
+  #ctrl-panel {
+    grid-area: ctrl;
+    border-right: 1px solid var(--border);
+    padding: 20px 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  section { display: flex; flex-direction: column; gap: 10px; }
+  section h2 {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .row label { font-size: 12px; color: var(--muted); min-width: 80px; font-family: var(--mono); }
+  .row input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    outline: none;
+  }
+  .row input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+  .val {
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--accent);
+    min-width: 52px;
+    text-align: right;
+  }
+
+  .math-box {
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.8;
+    color: #aaa;
+  }
+  .math-box .highlight { color: var(--accent); }
+  .math-box .highlight2 { color: var(--accent2); }
+
+  button {
+    padding: 8px 14px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 3px;
+    font-family: var(--mono);
+    letter-spacing: 0.04em;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  button.primary:hover { background: var(--accent); color: #000; }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  #drop-zone {
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    padding: 20px;
+    text-align: center;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+    transition: border-color 0.2s;
+    position: relative;
+  }
+  #drop-zone:hover, #drop-zone.drag-over { border-color: var(--accent); color: var(--accent); }
+  #drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  #img-name { font-size: 11px; color: var(--accent); font-family: var(--mono); margin-top: 4px; }
+
+  #canvas-area {
+    grid-area: canvas;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #080808;
+  }
+
+  .pane {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  #pane-input { border-bottom: 1px solid var(--border); }
+
+  .pane-label {
+    position: absolute;
+    top: 8px;
+    left: 12px;
+    font-size: 9px;
+    font-family: var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  canvas { max-width: 100%; max-height: 100%; display: block; }
+
+  #status-bar {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.8);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 5px 12px;
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--muted);
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  #progress-bar {
+    height: 2px;
+    background: var(--accent);
+    position: absolute;
+    top: 0;
+    left: 0;
+    transition: width 0.1s;
+    width: 0%;
+    z-index: 3;
+  }
+
+  footer {
+    grid-area: ftr;
+    border-top: 1px solid var(--border);
+    padding: 8px 24px;
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--muted);
+    display: flex;
+    gap: 24px;
+  }
+  footer span { color: var(--accent); }
+
+  #placeholder {
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 2;
+    font-family: var(--mono);
+    pointer-events: none;
+    padding: 1rem;
+  }
+  #placeholder .big { font-size: 10px; color: #444; margin-top: 8px; }
+
+  .checkbox-row { display: flex; align-items: center; gap: 8px; }
+  .checkbox-row input[type=checkbox] { accent-color: var(--accent); }
+  .checkbox-row label { font-size: 12px; color: var(--muted); font-family: var(--mono); cursor: pointer; }
+
+  select {
+    flex: 1;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 5px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    outline: none;
+  }
+  select:focus { border-color: var(--accent); }
+
+  .shape-group { display: flex; gap: 6px; }
+  .shape-btn {
+    flex: 1;
+    padding: 6px 4px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 3px;
+    font-family: var(--mono);
+    text-align: center;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .shape-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .shape-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(200,169,110,0.08); }
+
+  .row-hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Escher · Droste Conformal Renderer</h1>
+  <span>de Smit &amp; Lenstra, 2003 — h(w) = w^α where α = (2πi + log 256) / (2πi)</span>
+</header>
+
+<div id="ctrl-panel">
+
+  <section>
+    <h2>Source Image</h2>
+    <div id="drop-zone">
+      <input type="file" id="file-input" accept="image/*">
+      Drop image here or click to browse
+    </div>
+    <div id="img-name"></div>
+    <div class="btn-row">
+      <button id="btn-demo">log-space bands</button>
+      <button id="btn-escher-grid">Escher scene</button>
+      <button id="btn-plain-grid">plain grid</button>
+    </div>
+    <div class="math-box" style="font-size:10px; line-height:1.6;">
+      Source is sampled in <span class="highlight">log-space</span>: u = scale axis (logN period), v = angular axis (2π period). For genuine Droste nesting, source should repeat at matching scale across its width.
+    </div>
+  </section>
+
+  <section>
+    <h2>Transform Mode</h2>
+    <div class="row">
+      <label>mode</label>
+      <select id="sel-transform">
+        <option value="droste">droste (w^α)</option>
+        <option value="droste-swapped">neat but wrong (open spiral)</option>
+        <option value="power-explore">power-explore (w^c)</option>
+        <option value="z2">z² (conformal)</option>
+        <option value="z3">z³ (conformal)</option>
+        <option value="zn">z^n (custom power)</option>
+        <option value="exp">exp(z)</option>
+        <option value="log">log(z)</option>
+        <option value="multiply">c·z (scale + rotate)</option>
+      </select>
+    </div>
+    <div class="row row-hidden" id="row-view-scale">
+      <label>view scale</label>
+      <input type="range" id="sl-view-scale" min="0.1" max="5" value="1" step="0.1">
+      <div class="val" id="v-view-scale">1.00</div>
+    </div>
+    <div class="row row-hidden" id="row-power-re">
+      <label>Re(c)</label>
+      <input type="range" id="sl-power-re" min="-3" max="3" value="1" step="0.01">
+      <div class="val" id="v-power-re">1.00</div>
+    </div>
+    <div class="row row-hidden" id="row-power-im">
+      <label>Im(c)</label>
+      <input type="range" id="sl-power-im" min="-3" max="3" value="-0.88" step="0.01">
+      <div class="val" id="v-power-im">-0.88</div>
+    </div>
+    <div class="row row-hidden" id="row-zn-power">
+      <label>n</label>
+      <input type="range" id="sl-zn-power" min="1" max="10" value="2" step="0.5">
+      <div class="val" id="v-zn-power">2.0</div>
+    </div>
+    <div class="row row-hidden" id="row-mult-mag">
+      <label>|c| magnitude</label>
+      <input type="range" id="sl-mult-mag" min="0.1" max="5" value="1" step="0.1">
+      <div class="val" id="v-mult-mag">1.00</div>
+    </div>
+    <div class="row row-hidden" id="row-mult-arg">
+      <label>arg(c) angle (°)</label>
+      <input type="range" id="sl-mult-arg" min="-180" max="180" value="0" step="0.5">
+      <div class="val" id="v-mult-arg">0.0°</div>
+    </div>
+  </section>
+
+  <section id="section-presets">
+    <h2>Quick Presets</h2>
+    <div class="btn-row" id="preset-droste-btns">
+      <button id="btn-n16">N = 16</button>
+      <button id="btn-n256">N = 256 (Escher)</button>
+      <button id="btn-open">open spiral</button>
+      <button id="btn-annulus">annulus</button>
+    </div>
+    <div class="btn-row" id="preset-power-btns" style="display:none;">
+      <button id="btn-pe-escher">Escher α</button>
+      <button id="btn-pe-double">double (c=2)</button>
+      <button id="btn-pe-half">half (c=0.5)</button>
+      <button id="btn-pe-rotate">pure rotate</button>
+      <button id="btn-pe-kaleidoscope">kaleidoscope</button>
+    </div>
+  </section>
+
+  <section id="section-cartesian-presets" class="row-hidden">
+    <h2>Quick Presets</h2>
+    <div class="btn-row">
+      <button id="btn-cp-z2">z²</button>
+      <button id="btn-cp-z3">z³</button>
+      <button id="btn-cp-z5">z⁵</button>
+      <button id="btn-cp-exp">exp(z)</button>
+      <button id="btn-cp-log">log(z)</button>
+      <button id="btn-cp-rotate45">rotate 45°</button>
+      <button id="btn-cp-scale2x">scale 2×</button>
+    </div>
+  </section>
+
+  <section id="section-conformal-params" class="">
+    <h2>Conformal Map Parameters</h2>
+    <div class="math-box">
+      α = <span class="highlight" id="alpha-display">(2πi + log 256) / (2πi)</span><br>
+      γ = exp(<span class="highlight2" id="gamma-display">2πi·log(256) / (2πi + log(256))</span>)<br>
+      |γ| ≈ <span class="highlight" id="gamma-mag">22.584</span> &nbsp; arg(γ) ≈ <span class="highlight" id="gamma-arg">157.6°</span>
+    </div>
+    <div class="row">
+      <label>scale (N)</label>
+      <input type="range" id="sl-scale" min="2" max="512" value="256" step="1">
+      <div class="val" id="v-scale">256</div>
+    </div>
+    <div class="row">
+      <label>rotate (°)</label>
+      <input type="range" id="sl-rotate" min="-180" max="180" value="0" step="0.5">
+      <div class="val" id="v-rotate">0.0°</div>
+    </div>
+    <div class="row">
+      <label>inner radius</label>
+      <input type="range" id="sl-r1" min="0.001" max="0.4" value="0.005" step="0.001">
+      <div class="val" id="v-r1">0.005</div>
+    </div>
+    <div class="row">
+      <label>outer radius</label>
+      <input type="range" id="sl-r2" min="0.5" max="2.0" value="1.0" step="0.01">
+      <div class="val" id="v-r2">1.000</div>
+    </div>
+    <div class="row">
+      <label>iterations</label>
+      <input type="range" id="sl-iter" min="1" max="8" value="4" step="1">
+      <div class="val" id="v-iter">4</div>
+    </div>
+  </section>
+
+  <section id="section-annular" class="">
+    <h2>Annular Mapping</h2>
+    <div class="row">
+      <label>cut position</label>
+      <input type="range" id="sl-cut" min="-3.14159" max="3.14159" value="1.5708" step="0.01">
+      <div class="val" id="v-cut">π/2</div>
+    </div>
+    <div class="row">
+      <label>phase shift</label>
+      <input type="range" id="sl-phase" min="0" max="6.283" value="0" step="0.01">
+      <div class="val" id="v-phase">0.00</div>
+    </div>
+    <div class="row">
+      <label>zoom offset</label>
+      <input type="range" id="sl-zoom" min="-2" max="2" value="0" step="0.01">
+      <div class="val" id="v-zoom">0.00</div>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="chk-mirror" checked>
+      <label for="chk-mirror">angular fold (2× freq, mirrors v at 0.5)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="chk-grid">
+      <label for="chk-grid">overlay conformal grid</label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Color Treatment</h2>
+    <div class="row">
+      <label>mode</label>
+      <select id="sel-color">
+        <option value="retain">retain (original)</option>
+        <option value="grayscale">grayscale</option>
+        <option value="sepia">sepia</option>
+        <option value="invert">invert</option>
+        <option value="warm">warm</option>
+        <option value="cool">cool</option>
+        <option value="red">red channel</option>
+        <option value="green">green channel</option>
+        <option value="blue">blue channel</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>intensity</label>
+      <input type="range" id="sl-color-intensity" min="0" max="1" value="1" step="0.01">
+      <div class="val" id="v-color-intensity">1.00</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Output Shape</h2>
+    <div class="shape-group">
+      <div class="shape-btn active" data-shape="circle">circle</div>
+      <div class="shape-btn" data-shape="square">square</div>
+      <div class="shape-btn" data-shape="rect">rect</div>
+    </div>
+    <div class="row" id="row-aspect">
+      <label>aspect ratio</label>
+      <select id="sel-aspect">
+        <option value="0.5625">16 : 9</option>
+        <option value="0.75">4 : 3</option>
+        <option value="0.6667">3 : 2</option>
+        <option value="0.5">2 : 1</option>
+        <option value="1.3333">3 : 4 (portrait)</option>
+        <option value="1.7778">9 : 16 (portrait)</option>
+      </select>
+    </div>
+  </section>
+
+  <section>
+    <h2>Render</h2>
+    <div class="row">
+      <label>output size</label>
+      <input type="range" id="sl-res" min="256" max="1024" value="512" step="128">
+      <div class="val" id="v-res">512</div>
+    </div>
+    <div class="btn-row">
+      <button class="primary" id="btn-render">Render</button>
+      <button id="btn-save">Save PNG</button>
+      <button id="btn-reset">Reset params</button>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="chk-auto">
+      <label for="chk-auto">auto-render on change</label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Theory Reference</h2>
+    <div class="math-box">
+      <span class="highlight">Step 1 — log(w)</span><br>
+      Circles → lines. Droste image<br>
+      → doubly periodic grid:<br>
+      &nbsp; vertical period: 2π (rotation)<br>
+      &nbsp; horizontal period: logN (zoom)<br><br>
+      <span class="highlight">Step 2 — α · log(w)</span><br>
+      Rotate + scale so a diagonal<br>
+      path becomes a vertical segment<br>
+      of height exactly 2π.<br>
+      α must be complex — imaginary part<br>
+      couples scale to rotation.<br><br>
+      <span class="highlight">Step 3 — exp(α · log(w))</span><br>
+      Vertical height-2π line → circle.<br>
+      The loop closes. No hole.<br><br>
+      α = (2πi + logN) / (2πi)<br>
+      &nbsp; = 1 − i·logN/(2π)<br>
+      γ = exp(2πi·logN/(2πi+logN))<br>
+      |γ| ≈ <span class="highlight" id="gamma-mag2">22.584</span> &nbsp; arg ≈ <span class="highlight" id="gamma-arg2">157.6°</span>
+    </div>
+  </section>
+
+</div>
+
+<div id="canvas-area">
+  <!-- Top pane: input source image -->
+  <div class="pane" id="pane-input">
+    <span class="pane-label">source</span>
+    <div id="input-placeholder" style="text-align:center;color:var(--muted);font-size:11px;font-family:var(--mono);padding:1rem;">
+      No image loaded
+    </div>
+    <canvas id="input-canvas" style="display:none;"></canvas>
+  </div>
+
+  <!-- Bottom pane: rendered output -->
+  <div class="pane" id="pane-output">
+    <span class="pane-label">output</span>
+    <div id="progress-bar"></div>
+    <div id="placeholder">
+      <div>Awaiting render</div>
+      <div class="big">Load a source image above, then click Render</div>
+    </div>
+    <canvas id="output" style="display:none;"></canvas>
+    <div id="status-bar" style="display:none;"></div>
+  </div>
+</div>
+
+<footer>
+  <div>Reference: <span>B. de Smit &amp; H. W. Lenstra Jr.</span> — "The Mathematical Structure of Escher's Print Gallery" (2003)</div>
+  <div>Scale factor N=<span id="ft-n">256</span> · |γ|=<span id="ft-gamma">22.584</span> · arg(γ)=<span id="ft-arg">157.63°</span></div>
+</footer>
+
+<script>
+const TAU = 2 * Math.PI;
+
+// Complex number operations
+const C = {
+  add: (a, b) => ({ re: a.re + b.re, im: a.im + b.im }),
+  mul: (a, b) => ({ re: a.re*b.re - a.im*b.im, im: a.re*b.im + a.im*b.re }),
+  div: (a, b) => {
+    const d = b.re*b.re + b.im*b.im;
+    return { re: (a.re*b.re + a.im*b.im)/d, im: (a.im*b.re - a.re*b.im)/d };
+  },
+  exp: (z) => {
+    const r = Math.exp(z.re);
+    return { re: r * Math.cos(z.im), im: r * Math.sin(z.im) };
+  },
+  log: (z) => ({
+    re: 0.5 * Math.log(z.re*z.re + z.im*z.im),
+    im: Math.atan2(z.im, z.re)
+  }),
+  pow: (z, alpha) => C.exp(C.mul(alpha, C.log(z))),
+  abs: (z) => Math.sqrt(z.re*z.re + z.im*z.im),
+  arg: (z) => Math.atan2(z.im, z.re),
+  scale: (z, s) => ({ re: z.re*s, im: z.im*s }),
+  fromPolar: (r, theta) => ({ re: r*Math.cos(theta), im: r*Math.sin(theta) })
+};
+
+// Compute alpha and gamma for given N
+function computeParams(N) {
+  const logN = Math.log(N);
+  // alpha = (2πi + log N) / (2πi)
+  const num = { re: logN, im: TAU };
+  const den = { re: 0, im: TAU };
+  const alpha = C.div(num, den);
+  // gamma = exp(2πi * logN / (2πi + logN))
+  const gammaExp = C.div({ re: 0, im: TAU * logN }, { re: logN, im: TAU });
+  const gamma = C.exp(gammaExp);
+  return { alpha, gamma };
+}
+
+// State
+let srcImageData = null;
+let srcWidth = 0, srcHeight = 0;
+let renderGeneration = 0; // incremented each render; old renders bail when stale
+
+// Paint the current source into the input pane canvas
+function showInputImage() {
+  const ic = document.getElementById('input-canvas');
+  const ph = document.getElementById('input-placeholder');
+  if (!srcImageData) { ic.style.display = 'none'; ph.style.display = ''; return; }
+  ic.width  = srcWidth;
+  ic.height = srcHeight;
+  ic.style.display = 'block';
+  ph.style.display = 'none';
+  const ctx = ic.getContext('2d');
+  const id  = ctx.createImageData(srcWidth, srcHeight);
+  id.data.set(srcImageData);
+  ctx.putImageData(id, 0, 0);
+}
+
+// Get slider values
+function getParams() {
+  return {
+    transform: document.getElementById('sel-transform').value,
+    N: parseFloat(document.getElementById('sl-scale').value),
+    rotate: parseFloat(document.getElementById('sl-rotate').value) * Math.PI / 180,
+    r1: parseFloat(document.getElementById('sl-r1').value),
+    r2: parseFloat(document.getElementById('sl-r2').value),
+    iterations: parseInt(document.getElementById('sl-iter').value),
+    resolution: parseInt(document.getElementById('sl-res').value),
+    phase: parseFloat(document.getElementById('sl-phase').value),
+    zoom: parseFloat(document.getElementById('sl-zoom').value),
+    cutOffset: parseFloat(document.getElementById('sl-cut').value),
+    colorMode: document.getElementById('sel-color').value,
+    colorIntensity: parseFloat(document.getElementById('sl-color-intensity').value),
+    outputShape: document.querySelector('.shape-btn.active')?.dataset.shape || 'circle',
+    aspectRatio: parseFloat(document.getElementById('sel-aspect').value),
+    mirror: document.getElementById('chk-mirror').checked,
+    showGrid: document.getElementById('chk-grid').checked,
+    viewScale: parseFloat(document.getElementById('sl-view-scale').value),
+    powerRe: parseFloat(document.getElementById('sl-power-re').value),
+    powerIm: parseFloat(document.getElementById('sl-power-im').value),
+    znPower: parseFloat(document.getElementById('sl-zn-power').value),
+    multMag: parseFloat(document.getElementById('sl-mult-mag').value),
+    multArg: parseFloat(document.getElementById('sl-mult-arg').value) * Math.PI / 180,
+  };
+}
+
+// Bilinear sample from flat pixel array
+function sampleImage(data, w, h, u, v) {
+  // Tile the source image periodically (log-polar tiling)
+  u = ((u % 1) + 1) % 1;
+  v = ((v % 1) + 1) % 1;
+  const px = u * (w - 1);
+  const py = v * (h - 1);
+  const x0 = Math.floor(px), y0 = Math.floor(py);
+  const x1 = Math.min(x0+1, w-1), y1 = Math.min(y0+1, h-1);
+  const fx = px - x0, fy = py - y0;
+  const i00 = (y0*w + x0)*4;
+  const i10 = (y0*w + x1)*4;
+  const i01 = (y1*w + x0)*4;
+  const i11 = (y1*w + x1)*4;
+  const r = (1-fx)*(1-fy)*data[i00] + fx*(1-fy)*data[i10] + (1-fx)*fy*data[i01] + fx*fy*data[i11];
+  const g = (1-fx)*(1-fy)*data[i00+1] + fx*(1-fy)*data[i10+1] + (1-fx)*fy*data[i01+1] + fx*fy*data[i11+1];
+  const b = (1-fx)*(1-fy)*data[i00+2] + fx*(1-fy)*data[i10+2] + (1-fx)*fy*data[i01+2] + fx*fy*data[i11+2];
+  return [Math.round(r), Math.round(g), Math.round(b)];
+}
+
+function setStatus(msg) {
+  const el = document.getElementById('status-bar');
+  el.style.display = 'block';
+  el.textContent = msg;
+}
+let progressResetTimer = null;
+
+function setProgress(p) {
+  clearTimeout(progressResetTimer);
+  document.getElementById('progress-bar').style.width = (p * 100) + '%';
+}
+
+// Color treatment — applied per-pixel after sampling
+function applyColorMode(r, g, b, mode, intensity) {
+  let tr = r, tg = g, tb = b;
+  switch (mode) {
+    case 'grayscale': {
+      const l = 0.299*r + 0.587*g + 0.114*b;
+      tr = l; tg = l; tb = l;
+      break;
+    }
+    case 'sepia': {
+      tr = Math.min(255, r*0.393 + g*0.769 + b*0.189);
+      tg = Math.min(255, r*0.349 + g*0.686 + b*0.168);
+      tb = Math.min(255, r*0.272 + g*0.534 + b*0.131);
+      break;
+    }
+    case 'invert':
+      tr = 255 - r; tg = 255 - g; tb = 255 - b;
+      break;
+    case 'warm':
+      tr = Math.min(255, r * 1.18);
+      tg = Math.min(255, g * 1.05);
+      tb = Math.max(0,   b * 0.78);
+      break;
+    case 'cool':
+      tr = Math.max(0,   r * 0.80);
+      tg = Math.min(255, g * 1.02);
+      tb = Math.min(255, b * 1.22);
+      break;
+    case 'red':
+      tr = r; tg = 0; tb = 0;
+      break;
+    case 'green':
+      tr = 0; tg = g; tb = 0;
+      break;
+    case 'blue':
+      tr = 0; tg = 0; tb = b;
+      break;
+  }
+  // Blend treated colour with original by intensity
+  return [
+    Math.round(r + (tr - r) * intensity),
+    Math.round(g + (tg - g) * intensity),
+    Math.round(b + (tb - b) * intensity),
+  ];
+}
+
+async function render() {
+  if (!srcImageData) { setStatus('No source image — load one first'); return; }
+
+  const p = getParams();
+  const isDrosteMode = p.transform === 'droste' || p.transform === 'droste-swapped' || p.transform === 'power-explore';
+
+  if (isDrosteMode) {
+    await renderDroste();
+  } else {
+    await renderNonDroste();
+  }
+}
+
+async function renderDroste() {
+  const myGen = ++renderGeneration;
+  const p = getParams();
+  const { alpha, gamma } = computeParams(p.N);
+
+  // Choose effective alpha based on transform variant:
+  // Standard α = (2πi + logN) / (2πi) uses the diagonal path in log-space.
+  // Swapped: α · 2πi = logN  →  α = logN/(2πi) = -i·logN/(2π)
+  //   → uses the horizontal path, "swapping the roles of rotation and scaling" (neat but wrong)
+  // Power-explore: α = user-specified complex number c = Re(c) + Im(c)·i
+  //   → "grab and move c" (transcript 36:42) — produces kaleidoscopic Droste-like images
+  let effectiveAlpha = alpha;
+  if (p.transform === 'droste-swapped') {
+    const logN = Math.log(p.N);
+    effectiveAlpha = { re: 0, im: -logN / TAU };
+  } else if (p.transform === 'power-explore') {
+    effectiveAlpha = { re: p.powerRe, im: p.powerIm };
+  }
+
+  const out = document.getElementById('output');
+  const size = p.resolution;
+  const outH = p.outputShape === 'rect' ? Math.round(size * p.aspectRatio) : size;
+  out.width  = size;
+  out.height = outH;
+  out.style.display = 'block';
+  document.getElementById('placeholder').style.display = 'none';
+  setStatus('Rendering…');
+
+  const ctx = out.getContext('2d');
+  const outData = ctx.createImageData(size, outH);
+  const pixels = outData.data;
+
+  const halfW = size / 2;
+  const halfH = outH / 2;
+  const logN = Math.log(p.N);
+
+  // Process in chunks to keep UI responsive
+  const chunkH = 16;
+  for (let y0 = 0; y0 < outH; y0 += chunkH) {
+    await new Promise(r => setTimeout(r, 0));
+    if (renderGeneration !== myGen) return;
+    setProgress(y0 / outH);
+
+    for (let y = y0; y < Math.min(y0+chunkH, outH); y++) {
+      for (let x = 0; x < size; x++) {
+        let wx = (x - halfW) / halfW * p.r2 * 2;
+        let wy = (y - halfH) / halfW * p.r2 * 2;
+
+        let w = { re: wx, im: wy };
+        const wAbs = C.abs(w);
+
+        const outerClip = p.outputShape === 'circle' ? wAbs > p.r2 * 2 : false;
+        if (wAbs < p.r1 || outerClip) {
+          const idx = (y * size + x) * 4;
+          pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
+          pixels[idx+3] = 255;
+          continue;
+        }
+
+        w = C.fromPolar(wAbs, C.arg(w) + p.rotate + p.cutOffset);
+
+        const logW = C.log(w);
+
+        const logWmod = {
+          re: logW.re + p.zoom,
+          im: logW.im + p.phase
+        };
+
+        const z = C.exp(C.mul(effectiveAlpha, logWmod));
+        const logZ = C.log(z);
+
+        if (!isFinite(logZ.re) || !isFinite(logZ.im)) {
+          const idx = (y * size + x) * 4;
+          pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
+          pixels[idx+3] = 255;
+          continue;
+        }
+
+        let u = ((logZ.re * p.iterations / logN) % 1 + 1) % 1;
+        let v = ((logZ.im / TAU) % 1 + 1) % 1;
+
+        if (p.mirror) {
+          v = v < 0.5 ? v * 2 : (1 - v) * 2;
+        }
+
+        const [sr, sg, sb] = sampleImage(srcImageData, srcWidth, srcHeight, u, v);
+        const [cr, cg, cb] = applyColorMode(sr, sg, sb, p.colorMode, p.colorIntensity);
+
+        const idx = (y * size + x) * 4;
+        pixels[idx]   = cr;
+        pixels[idx+1] = cg;
+        pixels[idx+2] = cb;
+        pixels[idx+3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(outData, 0, 0);
+
+  if (p.showGrid) {
+    drawConformalGrid(ctx, size, outH, effectiveAlpha, p);
+  }
+
+  setProgress(1);
+
+  const gAbs = C.abs(gamma).toFixed(4);
+  const gArg = (C.arg(gamma) * 180 / Math.PI).toFixed(2);
+  const alphaImSign = effectiveAlpha.im < 0 ? '−' : '+';
+  const alphaImAbs  = Math.abs(effectiveAlpha.im).toFixed(4);
+  setStatus(`Done — N=${p.N} · |γ|=${gAbs} · arg(γ)=${gArg}° · α=(${effectiveAlpha.re.toFixed(4)} ${alphaImSign} ${alphaImAbs}i)`);
+
+  progressResetTimer = setTimeout(() => setProgress(0), 800);
+}
+
+async function renderNonDroste() {
+  const myGen = ++renderGeneration;
+  const p = getParams();
+
+  const out = document.getElementById('output');
+  const size = p.resolution;
+  const outH = p.outputShape === 'rect' ? Math.round(size * p.aspectRatio) : size;
+  out.width  = size;
+  out.height = outH;
+  out.style.display = 'block';
+  document.getElementById('placeholder').style.display = 'none';
+  setStatus('Rendering…');
+
+  const ctx = out.getContext('2d');
+  const outData = ctx.createImageData(size, outH);
+  const pixels = outData.data;
+
+  const halfW = size / 2;
+  const halfH = outH / 2;
+  const S = p.viewScale;
+
+  const chunkH = 16;
+  for (let y0 = 0; y0 < outH; y0 += chunkH) {
+    await new Promise(r => setTimeout(r, 0));
+    if (renderGeneration !== myGen) return;
+    setProgress(y0 / outH);
+
+    for (let y = y0; y < Math.min(y0+chunkH, outH); y++) {
+      for (let x = 0; x < size; x++) {
+        // Map output pixel to [-S, S] × [-S, S] in complex plane
+        const wx = (x - halfW) / halfW * S;
+        const wy = (y - halfH) / halfW * S;
+        const w = { re: wx, im: wy };
+
+        // Compute inverse transform to get z
+        let z;
+        switch (p.transform) {
+          case 'z2':
+            z = C.pow(w, { re: 0.5, im: 0 });
+            break;
+          case 'z3':
+            z = C.pow(w, { re: 1/3, im: 0 });
+            break;
+          case 'zn':
+            z = C.pow(w, { re: 1/p.znPower, im: 0 });
+            break;
+          case 'exp':
+            z = C.log(w);
+            break;
+          case 'log':
+            z = C.exp(w);
+            break;
+          case 'multiply': {
+            const c = C.fromPolar(p.multMag, p.multArg);
+            z = C.div(w, c);
+            break;
+          }
+          default:
+            z = w;
+        }
+
+        // Guard against NaN/Infinity from branch cuts, origin, etc.
+        if (!isFinite(z.re) || !isFinite(z.im)) {
+          const idx = (y * size + x) * 4;
+          pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
+          pixels[idx+3] = 255;
+          continue;
+        }
+
+        // Map z to source UV: u = (z.re + S) / (2*S), v = (z.im + S) / (2*S)
+        const u = (z.re + S) / (2 * S);
+        const v = (z.im + S) / (2 * S);
+
+        const [sr, sg, sb] = sampleImage(srcImageData, srcWidth, srcHeight, u, v);
+        const [cr, cg, cb] = applyColorMode(sr, sg, sb, p.colorMode, p.colorIntensity);
+
+        const idx = (y * size + x) * 4;
+        pixels[idx]   = cr;
+        pixels[idx+1] = cg;
+        pixels[idx+2] = cb;
+        pixels[idx+3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(outData, 0, 0);
+  setProgress(1);
+  setStatus(`Done — transform: ${p.transform}`);
+
+  progressResetTimer = setTimeout(() => setProgress(0), 800);
+}
+
+function drawConformalGrid(ctx, size, outH, alpha, p) {
+  const logN = Math.log(p.N);
+  const halfW = size / 2;
+  const halfH = outH / 2;
+  const invAlpha = C.div({ re: 1, im: 0 }, alpha);
+
+  function uvToScreen(u, v) {
+    const logZ = { re: u * logN / p.iterations, im: v * TAU };
+    const logWmod = C.mul(invAlpha, logZ);
+    const logW = { re: logWmod.re - p.zoom, im: logWmod.im - p.phase };
+    const wRot = C.exp(logW);
+    const totalRot = p.rotate + p.cutOffset;
+    const w = totalRot !== 0
+      ? C.fromPolar(C.abs(wRot), C.arg(wRot) - totalRot)
+      : wRot;
+    const wAbs = C.abs(w);
+    if (wAbs < p.r1 || wAbs > p.r2 * 2) return null;
+    return {
+      x: w.re / (p.r2 * 2) * halfW + halfW,
+      y: w.im / (p.r2 * 2) * halfW + halfH
+    };
+  }
+
+  function traceLine(pts) {
+    ctx.beginPath();
+    let penDown = false;
+    for (const pt of pts) {
+      if (!pt) { penDown = false; continue; }
+      if (!penDown) { ctx.moveTo(pt.x, pt.y); penDown = true; }
+      else ctx.lineTo(pt.x, pt.y);
+    }
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = 'rgba(200, 169, 110, 0.55)';
+  ctx.lineWidth = 0.7;
+  const nAngular = 16;
+  const uSteps = Math.max(151, p.iterations * 60);
+  for (let vi = 0; vi < nAngular; vi++) {
+    const v0 = vi / nAngular;
+    traceLine(Array.from({ length: uSteps }, (_, k) => uvToScreen(k / (uSteps - 1) * p.iterations, v0)));
+  }
+
+  ctx.strokeStyle = 'rgba(122, 159, 181, 0.55)';
+  const nRadialPerIter = 3;
+  const nRadial = p.iterations * nRadialPerIter;
+  for (let ui = 0; ui <= nRadial; ui++) {
+    const u0 = ui / nRadialPerIter;
+    traceLine(Array.from({ length: 201 }, (_, k) => uvToScreen(u0, k / 200)));
+  }
+}
+
+// ---- Demo image generators ----
+
+function generateLogSpaceBands() {
+  const W = 512, H = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const img = ctx.createImageData(W, H);
+  const d = img.data;
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const u = x / W;
+      const v = y / H;
+
+      const scaleExp = Math.pow(2, u * 4);
+      const gridU = Math.abs(Math.sin(u * TAU * 12 / scaleExp)) < 0.08 ? 1 : 0;
+      const gridV = Math.abs(Math.sin(v * TAU * 12)) < 0.06 ? 1 : 0;
+      const onGrid = gridU || gridV;
+
+      const hue = v * 360;
+      const [hr, hg, hb] = hslToRgb(hue, 0.5, onGrid ? 0.15 : 0.55 + 0.2 * u);
+
+      const bright = 0.6 + 0.4 * u;
+      const i = (y * W + x) * 4;
+      d[i]   = Math.min(255, Math.round(hr * bright));
+      d[i+1] = Math.min(255, Math.round(hg * bright));
+      d[i+2] = Math.min(255, Math.round(hb * bright));
+      d[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return { data: img.data, w: W, h: H };
+}
+
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2*l - 1)) * s;
+  const x = c * (1 - Math.abs((h/60) % 2 - 1));
+  const m = l - c/2;
+  let r=0, g=0, b=0;
+  if      (h < 60)  { r=c; g=x; b=0; }
+  else if (h < 120) { r=x; g=c; b=0; }
+  else if (h < 180) { r=0; g=c; b=x; }
+  else if (h < 240) { r=0; g=x; b=c; }
+  else if (h < 300) { r=x; g=0; b=c; }
+  else              { r=c; g=0; b=x; }
+  return [(r+m)*255, (g+m)*255, (b+m)*255];
+}
+
+function generateEscherScene() {
+  const W = 512, H = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#d8cfc0';
+  ctx.fillRect(0, 0, W, H);
+
+  function drawScene(x, y, w, h, depth) {
+    if (depth <= 0 || w < 4) return;
+    ctx.fillStyle = depth === 3 ? '#b0a898' : '#c8bfb0';
+    ctx.fillRect(x, y + h*0.65, w, h*0.35);
+    ctx.fillStyle = depth === 3 ? '#ccc4b8' : '#ddd5c8';
+    ctx.fillRect(x, y, w, h * 0.65);
+    ctx.strokeStyle = '#6a5a48';
+    ctx.lineWidth = Math.max(0.5, w * 0.015);
+    ctx.strokeRect(x + w*0.05, y + h*0.05, w*0.9, h*0.6);
+    const numPrints = depth === 3 ? 3 : 2;
+    for (let p = 0; p < numPrints; p++) {
+      const px = x + w*(0.1 + p*(0.8/numPrints));
+      const py = y + h * 0.15;
+      const pw = w * 0.18;
+      const ph = h * 0.22;
+      ctx.fillStyle = '#f0e8d8';
+      ctx.fillRect(px, py, pw, ph);
+      ctx.strokeStyle = '#4a3a28';
+      ctx.lineWidth = Math.max(0.5, w * 0.008);
+      ctx.strokeRect(px, py, pw, ph);
+      if (depth > 1) {
+        drawScene(px + pw*0.08, py + ph*0.08, pw*0.84, ph*0.84, depth - 1);
+      }
+    }
+    if (depth === 1) {
+      ctx.fillStyle = '#7a8a6a';
+      for (let b = 0; b < 5; b++) {
+        const bh = h * (0.15 + (b % 3) * 0.08);
+        ctx.fillRect(x + w*(0.1 + b*0.16), y + h*0.55 - bh, w*0.12, bh);
+      }
+    }
+    if (depth >= 2) {
+      ctx.fillStyle = '#3a2a1a';
+      const px = x + w * 0.45;
+      const py = y + h * 0.52;
+      ctx.beginPath();
+      ctx.arc(px, py - h*0.07, w*0.025, 0, TAU);
+      ctx.fill();
+      ctx.fillRect(px - w*0.015, py - h*0.07, w*0.03, h*0.1);
+    }
+  }
+
+  drawScene(0, 0, W, H, 3);
+
+  ctx.strokeStyle = '#4a3a28';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(2, 2, W-4, H-4);
+
+  const raw = ctx.getImageData(0, 0, W, H);
+  return { data: raw.data, w: W, h: H };
+}
+
+function generatePlainGrid() {
+  const W = 512, H = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const img = ctx.createImageData(W, H);
+  const d = img.data;
+
+  const cellsX = 16, cellsY = 16;
+  const lineW = 2; // line width in pixels
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const cellX = Math.floor(x / (W / cellsX));
+      const cellY = Math.floor(y / (H / cellsY));
+
+      // Thin grid lines
+      const onLineX = (x % (W / cellsX)) < lineW;
+      const onLineY = (y % (H / cellsY)) < lineW;
+      // Thicker axis lines at center
+      const onAxisX = Math.abs(x - W/2) < lineW;
+      const onAxisY = Math.abs(y - H/2) < lineW;
+
+      const i = (y * W + x) * 4;
+      if (onAxisX || onAxisY) {
+        // Red axes
+        d[i] = 200; d[i+1] = 60; d[i+2] = 60; d[i+3] = 255;
+      } else if (onLineX || onLineY) {
+        // Gray grid lines
+        d[i] = 100; d[i+1] = 100; d[i+2] = 100; d[i+3] = 255;
+      } else {
+        // Checkerboard fill — alternating light/dark
+        const checker = (cellX + cellY) % 2 === 0;
+        const base = checker ? 45 : 30;
+        d[i] = base; d[i+1] = base; d[i+2] = base + 10; d[i+3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  // Label quadrants
+  ctx.font = 'bold 18px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(200,169,110,0.6)';
+  ctx.fillText('+re, −im', W*0.75, H*0.25);
+  ctx.fillText('−re, −im', W*0.25, H*0.25);
+  ctx.fillText('−re, +im', W*0.25, H*0.75);
+  ctx.fillText('+re, +im', W*0.75, H*0.75);
+
+  const raw = ctx.getImageData(0, 0, W, H);
+  return { data: raw.data, w: W, h: H };
+}
+
+function updateSourceInfo(usesLogPolar) {
+  const infoBox = document.querySelector('#ctrl-panel > section:first-child .math-box');
+  if (!infoBox) return;
+  if (usesLogPolar) {
+    infoBox.innerHTML = 'Source is sampled in <span class="highlight">log-space</span>: u = scale axis (logN period), v = angular axis (2π period). For genuine Droste nesting, source should repeat at matching scale across its width.';
+  } else {
+    infoBox.innerHTML = 'Source is sampled in <span class="highlight">Cartesian</span> coordinates: the complex plane [−S, S]² maps directly onto the source image. Grid patterns show conformal distortion clearly.';
+  }
+}
+
+// ---- UI wiring ----
+
+function updateMathDisplay() {
+  const N = parseFloat(document.getElementById('sl-scale').value);
+  const { alpha, gamma } = computeParams(N);
+  const gAbs = C.abs(gamma).toFixed(4);
+  const gArg = (C.arg(gamma) * 180 / Math.PI).toFixed(2);
+
+  // Update alpha display — show formula with current N, then ≈ numerical value
+  const alphaImSign = alpha.im < 0 ? '−' : '+';
+  const alphaImAbs  = Math.abs(alpha.im).toFixed(4);
+  document.getElementById('alpha-display').textContent =
+    `(2πi + log ${N}) / (2πi)  ≈  ${alpha.re.toFixed(4)} ${alphaImSign} ${alphaImAbs}i`;
+
+  // Update gamma display
+  document.getElementById('gamma-display').textContent = `2πi·log(${N}) / (2πi + log(${N}))`;
+
+  document.getElementById('gamma-mag').textContent  = gAbs;
+  document.getElementById('gamma-arg').textContent  = gArg + '°';
+  document.getElementById('gamma-mag2').textContent = gAbs;
+  document.getElementById('gamma-arg2').textContent = gArg + '°';
+  document.getElementById('ft-n').textContent    = N;
+  document.getElementById('ft-gamma').textContent = gAbs;
+  document.getElementById('ft-arg').textContent   = gArg + '°';
+}
+
+function updateTransformVisibility() {
+  const transform = document.getElementById('sel-transform').value;
+  const isDroste = transform === 'droste' || transform === 'droste-swapped';
+  const usesLogPolar = isDroste || transform === 'power-explore';
+
+  // Droste pipeline sections (also shown for power-explore since it uses log-polar sampling)
+  document.getElementById('section-presets').classList.toggle('row-hidden', !usesLogPolar);
+  document.getElementById('section-conformal-params').classList.toggle('row-hidden', !usesLogPolar);
+  document.getElementById('section-annular').classList.toggle('row-hidden', !usesLogPolar);
+
+  // Cartesian presets for non-Droste modes
+  document.getElementById('section-cartesian-presets').classList.toggle('row-hidden', usesLogPolar);
+
+  // Within the Droste presets, show the right sub-row
+  document.getElementById('preset-droste-btns').style.display = (isDroste) ? '' : 'none';
+  document.getElementById('preset-power-btns').style.display = (transform === 'power-explore') ? '' : 'none';
+
+  // Non-Droste view scale (only for purely Cartesian transforms)
+  document.getElementById('row-view-scale').classList.toggle('row-hidden', usesLogPolar);
+
+  // Power-explore controls
+  document.getElementById('row-power-re').classList.toggle('row-hidden', transform !== 'power-explore');
+  document.getElementById('row-power-im').classList.toggle('row-hidden', transform !== 'power-explore');
+
+  // z^n controls
+  document.getElementById('row-zn-power').classList.toggle('row-hidden', transform !== 'zn');
+
+  // multiply controls
+  document.getElementById('row-mult-mag').classList.toggle('row-hidden', transform !== 'multiply');
+  document.getElementById('row-mult-arg').classList.toggle('row-hidden', transform !== 'multiply');
+
+  // Update source info text based on sampling mode
+  updateSourceInfo(usesLogPolar);
+}
+
+function wireSlider(id, display, fmt) {
+  const sl = document.getElementById(id);
+  const dv = document.getElementById(display);
+  sl.addEventListener('input', () => {
+    dv.textContent = fmt(sl.value);
+    updateMathDisplay();
+    if (document.getElementById('chk-auto').checked) render();
+  });
+}
+
+wireSlider('sl-scale',  'v-scale',  v => parseInt(v));
+wireSlider('sl-rotate', 'v-rotate', v => parseFloat(v).toFixed(1) + '°');
+wireSlider('sl-r1',     'v-r1',     v => parseFloat(v).toFixed(3));
+wireSlider('sl-r2',     'v-r2',     v => parseFloat(v).toFixed(3));
+wireSlider('sl-iter',   'v-iter',   v => parseInt(v));
+wireSlider('sl-res',    'v-res',    v => parseInt(v));
+wireSlider('sl-phase',  'v-phase',  v => parseFloat(v).toFixed(2));
+wireSlider('sl-zoom',   'v-zoom',   v => parseFloat(v).toFixed(2));
+wireSlider('sl-color-intensity', 'v-color-intensity', v => parseFloat(v).toFixed(2));
+wireSlider('sl-view-scale', 'v-view-scale', v => parseFloat(v).toFixed(2));
+wireSlider('sl-power-re', 'v-power-re', v => parseFloat(v).toFixed(2));
+wireSlider('sl-power-im', 'v-power-im', v => parseFloat(v).toFixed(2));
+wireSlider('sl-zn-power', 'v-zn-power', v => parseFloat(v).toFixed(1));
+wireSlider('sl-mult-mag', 'v-mult-mag', v => parseFloat(v).toFixed(2));
+wireSlider('sl-mult-arg', 'v-mult-arg', v => parseFloat(v).toFixed(1) + '°');
+
+// Transform mode selector
+document.getElementById('sel-transform').addEventListener('change', () => {
+  updateTransformVisibility();
+  if (document.getElementById('chk-auto').checked) render();
+});
+
+// Cut position slider — display as fraction of π
+const slCut = document.getElementById('sl-cut');
+const vCut  = document.getElementById('v-cut');
+function fmtCut(val) {
+  const f = parseFloat(val);
+  if (Math.abs(f) < 0.01) return '0';
+  const frac = f / Math.PI;
+  if (Math.abs(frac - 0.5)  < 0.01) return 'π/2';
+  if (Math.abs(frac + 0.5)  < 0.01) return '-π/2';
+  if (Math.abs(frac - 1)    < 0.01) return 'π';
+  if (Math.abs(frac + 1)    < 0.01) return '-π';
+  if (Math.abs(frac - 0.25) < 0.01) return 'π/4';
+  if (Math.abs(frac + 0.25) < 0.01) return '-π/4';
+  return (frac).toFixed(2) + 'π';
+}
+slCut.addEventListener('input', () => {
+  vCut.textContent = fmtCut(slCut.value);
+  if (document.getElementById('chk-auto').checked) render();
+});
+
+// Color select and aspect select trigger re-render in auto mode
+document.getElementById('sel-color').addEventListener('change', () => {
+  if (document.getElementById('chk-auto').checked) render();
+});
+document.getElementById('sel-aspect').addEventListener('change', () => {
+  if (document.getElementById('chk-auto').checked) render();
+});
+
+// Shape buttons — mutually exclusive toggle, show/hide aspect row for rect
+const shapeBtns = document.querySelectorAll('.shape-btn');
+const rowAspect = document.getElementById('row-aspect');
+shapeBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    shapeBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    rowAspect.classList.toggle('row-hidden', btn.dataset.shape !== 'rect');
+    if (document.getElementById('chk-auto').checked) render();
+  });
+});
+rowAspect.classList.add('row-hidden');
+
+document.getElementById('btn-render').addEventListener('click', render);
+
+document.getElementById('btn-demo').addEventListener('click', () => {
+  const src = generateLogSpaceBands();
+  srcImageData = src.data; srcWidth = src.w; srcHeight = src.h;
+  document.getElementById('img-name').textContent = '[ log-space bands — 512×512 ]';
+  showInputImage();
+  render();
+});
+
+document.getElementById('btn-escher-grid').addEventListener('click', () => {
+  const src = generateEscherScene();
+  srcImageData = src.data; srcWidth = src.w; srcHeight = src.h;
+  document.getElementById('img-name').textContent = '[ Escher scene — 512×512 ]';
+  showInputImage();
+  render();
+});
+
+document.getElementById('btn-plain-grid').addEventListener('click', () => {
+  const src = generatePlainGrid();
+  srcImageData = src.data; srcWidth = src.w; srcHeight = src.h;
+  document.getElementById('img-name').textContent = '[ plain grid — 512×512 ]';
+  showInputImage();
+  render();
+});
+
+// Quick presets
+function applyPreset(params, switchTransform) {
+  // Optionally switch the transform mode first
+  if (switchTransform) {
+    document.getElementById('sel-transform').value = switchTransform;
+    updateTransformVisibility();
+  }
+  for (const [id, val] of Object.entries(params)) {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  }
+  // Refresh all display values
+  const refreshMap = {
+    'sl-scale':      { dv: 'v-scale',      fmt: v => parseInt(v) },
+    'sl-r1':         { dv: 'v-r1',         fmt: v => parseFloat(v).toFixed(3) },
+    'sl-r2':         { dv: 'v-r2',         fmt: v => parseFloat(v).toFixed(3) },
+    'sl-iter':       { dv: 'v-iter',       fmt: v => parseInt(v) },
+    'sl-rotate':     { dv: 'v-rotate',     fmt: v => parseFloat(v).toFixed(1) + '°' },
+    'sl-view-scale': { dv: 'v-view-scale', fmt: v => parseFloat(v).toFixed(2) },
+    'sl-power-re':   { dv: 'v-power-re',   fmt: v => parseFloat(v).toFixed(2) },
+    'sl-power-im':   { dv: 'v-power-im',   fmt: v => parseFloat(v).toFixed(2) },
+    'sl-zn-power':   { dv: 'v-zn-power',   fmt: v => parseFloat(v).toFixed(1) },
+    'sl-mult-mag':   { dv: 'v-mult-mag',   fmt: v => parseFloat(v).toFixed(2) },
+    'sl-mult-arg':   { dv: 'v-mult-arg',   fmt: v => parseFloat(v).toFixed(1) + '°' },
+  };
+  for (const [sid, cfg] of Object.entries(refreshMap)) {
+    if (params[sid] !== undefined) {
+      document.getElementById(cfg.dv).textContent = cfg.fmt(params[sid]);
+    }
+  }
+  if (params['sl-cut'] !== undefined) {
+    document.getElementById('v-cut').textContent = fmtCut(params['sl-cut']);
+  }
+  updateMathDisplay();
+  if (document.getElementById('chk-auto').checked) render();
+}
+
+document.getElementById('btn-n16').addEventListener('click', () => {
+  applyPreset({ 'sl-scale': 16, 'sl-r1': 0.005, 'sl-r2': 1.0, 'sl-iter': 3 });
+});
+document.getElementById('btn-n256').addEventListener('click', () => {
+  applyPreset({ 'sl-scale': 256, 'sl-r1': 0.005, 'sl-r2': 1.0, 'sl-iter': 4 });
+});
+document.getElementById('btn-open').addEventListener('click', () => {
+  applyPreset({ 'sl-r1': 0.001, 'sl-r2': 1.0, 'sl-iter': 6 });
+});
+document.getElementById('btn-annulus').addEventListener('click', () => {
+  applyPreset({ 'sl-r1': 0.15, 'sl-r2': 1.0, 'sl-iter': 3 });
+});
+
+// Power-explore presets
+document.getElementById('btn-pe-escher').addEventListener('click', () => {
+  applyPreset({ 'sl-power-re': 1, 'sl-power-im': -0.88, 'sl-scale': 256, 'sl-r1': 0.005, 'sl-iter': 4 }, 'power-explore');
+});
+document.getElementById('btn-pe-double').addEventListener('click', () => {
+  applyPreset({ 'sl-power-re': 2, 'sl-power-im': 0, 'sl-scale': 256, 'sl-r1': 0.005, 'sl-iter': 3 }, 'power-explore');
+});
+document.getElementById('btn-pe-half').addEventListener('click', () => {
+  applyPreset({ 'sl-power-re': 0.5, 'sl-power-im': 0, 'sl-scale': 16, 'sl-r1': 0.005, 'sl-iter': 3 }, 'power-explore');
+});
+document.getElementById('btn-pe-rotate').addEventListener('click', () => {
+  applyPreset({ 'sl-power-re': 0, 'sl-power-im': -1.0, 'sl-scale': 256, 'sl-r1': 0.001, 'sl-iter': 5 }, 'power-explore');
+});
+document.getElementById('btn-pe-kaleidoscope').addEventListener('click', () => {
+  applyPreset({ 'sl-power-re': 0.5, 'sl-power-im': -0.5, 'sl-scale': 64, 'sl-r1': 0.001, 'sl-iter': 5 }, 'power-explore');
+});
+
+// Cartesian preset buttons — each switches transform mode and sets appropriate params
+document.getElementById('btn-cp-z2').addEventListener('click', () => {
+  applyPreset({ 'sl-view-scale': 2 }, 'z2');
+});
+document.getElementById('btn-cp-z3').addEventListener('click', () => {
+  applyPreset({ 'sl-view-scale': 2 }, 'z3');
+});
+document.getElementById('btn-cp-z5').addEventListener('click', () => {
+  applyPreset({ 'sl-zn-power': 5, 'sl-view-scale': 2 }, 'zn');
+});
+document.getElementById('btn-cp-exp').addEventListener('click', () => {
+  applyPreset({ 'sl-view-scale': 3 }, 'exp');
+});
+document.getElementById('btn-cp-log').addEventListener('click', () => {
+  applyPreset({ 'sl-view-scale': 2 }, 'log');
+});
+document.getElementById('btn-cp-rotate45').addEventListener('click', () => {
+  applyPreset({ 'sl-mult-mag': 1, 'sl-mult-arg': 45 }, 'multiply');
+});
+document.getElementById('btn-cp-scale2x').addEventListener('click', () => {
+  applyPreset({ 'sl-mult-mag': 2, 'sl-mult-arg': 0 }, 'multiply');
+});
+
+document.getElementById('btn-save').addEventListener('click', () => {
+  const out = document.getElementById('output');
+  if (out.style.display === 'none') return;
+  const a = document.createElement('a');
+  a.download = 'droste-escher.png';
+  a.href = out.toDataURL('image/png');
+  a.click();
+});
+
+document.getElementById('btn-reset').addEventListener('click', () => {
+  const defaults = {
+    'sl-scale':           { val: 256,    display: 'v-scale',           fmt: v => parseInt(v) },
+    'sl-rotate':          { val: 0,      display: 'v-rotate',          fmt: v => parseFloat(v).toFixed(1) + '°' },
+    'sl-r1':              { val: 0.005,  display: 'v-r1',              fmt: v => parseFloat(v).toFixed(3) },
+    'sl-r2':              { val: 1.0,    display: 'v-r2',              fmt: v => parseFloat(v).toFixed(3) },
+    'sl-iter':            { val: 4,      display: 'v-iter',            fmt: v => parseInt(v) },
+    'sl-res':             { val: 512,    display: 'v-res',             fmt: v => parseInt(v) },
+    'sl-phase':           { val: 0,      display: 'v-phase',           fmt: v => parseFloat(v).toFixed(2) },
+    'sl-zoom':            { val: 0,      display: 'v-zoom',            fmt: v => parseFloat(v).toFixed(2) },
+    'sl-cut':             { val: 1.5708, display: 'v-cut',             fmt: () => 'π/2' },
+    'sl-color-intensity': { val: 1,      display: 'v-color-intensity', fmt: v => parseFloat(v).toFixed(2) },
+  };
+  for (const [id, cfg] of Object.entries(defaults)) {
+    const sl = document.getElementById(id);
+    sl.value = cfg.val;
+    document.getElementById(cfg.display).textContent = cfg.fmt(cfg.val);
+  }
+  document.getElementById('sel-color').value = 'retain';
+  shapeBtns.forEach(b => b.classList.remove('active'));
+  document.querySelector('[data-shape="circle"]').classList.add('active');
+  document.getElementById('row-aspect').classList.add('row-hidden');
+  // Reset transform-specific sliders
+  document.getElementById('sel-transform').value = 'droste';
+  document.getElementById('sl-view-scale').value = 1;
+  document.getElementById('v-view-scale').textContent = '1.00';
+  document.getElementById('sl-power-re').value = 1;
+  document.getElementById('v-power-re').textContent = '1.00';
+  document.getElementById('sl-power-im').value = -0.88;
+  document.getElementById('v-power-im').textContent = '-0.88';
+  document.getElementById('sl-zn-power').value = 2;
+  document.getElementById('v-zn-power').textContent = '2.0';
+  document.getElementById('sl-mult-mag').value = 1;
+  document.getElementById('v-mult-mag').textContent = '1.00';
+  document.getElementById('sl-mult-arg').value = 0;
+  document.getElementById('v-mult-arg').textContent = '0.0°';
+  updateTransformVisibility();
+  updateMathDisplay();
+});
+
+// File drop / upload
+const fileInput = document.getElementById('file-input');
+const dropZone = document.getElementById('drop-zone');
+
+fileInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+
+function loadFile(file) {
+  if (!file || !file.type.startsWith('image/')) {
+    setStatus('File rejected — must be an image (PNG, JPEG, WEBP, GIF)');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onerror = () => setStatus('File read error — could not open ' + file.name);
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onerror = () => setStatus('Image decode error — ' + file.name + ' may be corrupt or unsupported');
+    img.onload = () => {
+      const maxDim = 1024;
+      let w = img.width, h = img.height;
+      if (w > maxDim || h > maxDim) {
+        const s = maxDim / Math.max(w, h);
+        w = Math.round(w * s); h = Math.round(h * s);
+      }
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      const id = ctx.getImageData(0, 0, w, h);
+      srcImageData = id.data;
+      srcWidth = w;
+      srcHeight = h;
+      document.getElementById('img-name').textContent = `[ ${file.name} — ${w}×${h} ]`;
+      showInputImage();
+      render();
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+// Init
+updateMathDisplay();
+updateTransformVisibility();
+</script>
+</body>
+</html>
