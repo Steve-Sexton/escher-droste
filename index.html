@@ -250,6 +250,8 @@
     font-family: var(--mono);
     text-align: center;
     transition: border-color 0.15s, color 0.15s;
+    letter-spacing: 0.04em;
+    line-height: 1;
   }
   .shape-btn:hover { border-color: var(--accent); color: var(--accent); }
   .shape-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(200,169,110,0.08); }
@@ -278,8 +280,8 @@
       <button id="btn-escher-grid">Escher scene</button>
       <button id="btn-plain-grid">plain grid</button>
     </div>
-    <div class="math-box" style="font-size:10px; line-height:1.6;">
-      Source is sampled in <span class="highlight">log-space</span>: u = scale axis (logN period), v = angular axis (2π period). For genuine Droste nesting, source should repeat at matching scale across its width.
+    <div class="math-box" id="source-info-box" style="font-size:10px; line-height:1.6;">
+      Source is sampled in <span class="highlight" id="source-mode-label">log-space</span>: <span id="source-mode-desc">u = scale axis (logN period), v = angular axis (2π period). For genuine Droste nesting, source should repeat at matching scale across its width.</span>
     </div>
   </section>
 
@@ -338,6 +340,7 @@
       <button id="btn-n256">N = 256 (Escher)</button>
       <button id="btn-open">open spiral</button>
       <button id="btn-annulus">annulus</button>
+      <button id="btn-print-gallery" title="Optimal settings for Escher Print Gallery source images">Print Gallery</button>
     </div>
     <div class="btn-row" id="preset-power-btns" style="display:none;">
       <button id="btn-pe-escher">Escher α</button>
@@ -404,7 +407,7 @@
     </div>
     <div class="row">
       <label>phase shift</label>
-      <input type="range" id="sl-phase" min="0" max="6.283" value="0" step="0.01">
+      <input type="range" id="sl-phase" min="0" max="6.28318" value="0" step="0.01">
       <div class="val" id="v-phase">0.00</div>
     </div>
     <div class="row">
@@ -415,6 +418,10 @@
     <div class="checkbox-row">
       <input type="checkbox" id="chk-mirror" checked>
       <label for="chk-mirror">angular fold (2× freq, mirrors v at 0.5)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="chk-reverse">
+      <label for="chk-reverse">reverse spiral (w<sup>ᾱ</sup> — conjugate α, reverses spiral direction)</label>
     </div>
     <div class="checkbox-row">
       <input type="checkbox" id="chk-grid">
@@ -448,9 +455,9 @@
   <section>
     <h2>Output Shape</h2>
     <div class="shape-group">
-      <div class="shape-btn active" data-shape="circle">circle</div>
-      <div class="shape-btn" data-shape="square">square</div>
-      <div class="shape-btn" data-shape="rect">rect</div>
+      <button type="button" class="shape-btn active" data-shape="circle">circle</button>
+      <button type="button" class="shape-btn" data-shape="square">square</button>
+      <button type="button" class="shape-btn" data-shape="rect">rect</button>
     </div>
     <div class="row" id="row-aspect">
       <label>aspect ratio</label>
@@ -546,6 +553,7 @@ const C = {
   mul: (a, b) => ({ re: a.re*b.re - a.im*b.im, im: a.re*b.im + a.im*b.re }),
   div: (a, b) => {
     const d = b.re*b.re + b.im*b.im;
+    if (d === 0) return { re: NaN, im: NaN };
     return { re: (a.re*b.re + a.im*b.im)/d, im: (a.im*b.re - a.re*b.im)/d };
   },
   exp: (z) => {
@@ -579,7 +587,6 @@ function computeParams(N) {
 // State
 let srcImageData = null;
 let srcWidth = 0, srcHeight = 0;
-let renderGeneration = 0; // incremented each render; old renders bail when stale
 
 // Paint the current source into the input pane canvas
 function showInputImage() {
@@ -614,6 +621,7 @@ function getParams() {
     outputShape: document.querySelector('.shape-btn.active')?.dataset.shape || 'circle',
     aspectRatio: parseFloat(document.getElementById('sel-aspect').value),
     mirror: document.getElementById('chk-mirror').checked,
+    reverse: document.getElementById('chk-reverse').checked,
     showGrid: document.getElementById('chk-grid').checked,
     viewScale: parseFloat(document.getElementById('sl-view-scale').value),
     powerRe: parseFloat(document.getElementById('sl-power-re').value),
@@ -702,38 +710,268 @@ function applyColorMode(r, g, b, mode, intensity) {
   ];
 }
 
+// ---- Web Worker (inline blob) ----
+// Contains all pixel math: C library, sampleImage, applyColorMode, both render loops.
+// Communicates via postMessage: receives params + srcImageData, sends progress + pixel buffer.
+const _workerSource = `
+'use strict';
+const TAU = 2 * Math.PI;
+
+const C = {
+  add: (a, b) => ({ re: a.re + b.re, im: a.im + b.im }),
+  mul: (a, b) => ({ re: a.re*b.re - a.im*b.im, im: a.re*b.im + a.im*b.re }),
+  div: (a, b) => {
+    const d = b.re*b.re + b.im*b.im;
+    if (d === 0) return { re: NaN, im: NaN };
+    return { re: (a.re*b.re + a.im*b.im)/d, im: (a.im*b.re - a.re*b.im)/d };
+  },
+  exp: (z) => {
+    const r = Math.exp(z.re);
+    return { re: r * Math.cos(z.im), im: r * Math.sin(z.im) };
+  },
+  log: (z) => ({
+    re: 0.5 * Math.log(z.re*z.re + z.im*z.im),
+    im: Math.atan2(z.im, z.re)
+  }),
+  pow: (z, alpha) => C.exp(C.mul(alpha, C.log(z))),
+  abs: (z) => Math.sqrt(z.re*z.re + z.im*z.im),
+  arg: (z) => Math.atan2(z.im, z.re),
+  fromPolar: (r, theta) => ({ re: r*Math.cos(theta), im: r*Math.sin(theta) })
+};
+
+function computeParams(N) {
+  const logN = Math.log(N);
+  const num = { re: logN, im: TAU };
+  const den = { re: 0, im: TAU };
+  const alpha = C.div(num, den);
+  const gammaExp = C.div({ re: 0, im: TAU * logN }, { re: logN, im: TAU });
+  const gamma = C.exp(gammaExp);
+  return { alpha, gamma };
+}
+
+function sampleImage(data, w, h, u, v) {
+  u = ((u % 1) + 1) % 1;
+  v = ((v % 1) + 1) % 1;
+  const px = u * (w - 1);
+  const py = v * (h - 1);
+  const x0 = Math.floor(px), y0 = Math.floor(py);
+  const x1 = Math.min(x0+1, w-1), y1 = Math.min(y0+1, h-1);
+  const fx = px - x0, fy = py - y0;
+  const i00 = (y0*w + x0)*4;
+  const i10 = (y0*w + x1)*4;
+  const i01 = (y1*w + x0)*4;
+  const i11 = (y1*w + x1)*4;
+  const r = (1-fx)*(1-fy)*data[i00] + fx*(1-fy)*data[i10] + (1-fx)*fy*data[i01] + fx*fy*data[i11];
+  const g = (1-fx)*(1-fy)*data[i00+1] + fx*(1-fy)*data[i10+1] + (1-fx)*fy*data[i01+1] + fx*fy*data[i11+1];
+  const b = (1-fx)*(1-fy)*data[i00+2] + fx*(1-fy)*data[i10+2] + (1-fx)*fy*data[i01+2] + fx*fy*data[i11+2];
+  return [Math.round(r), Math.round(g), Math.round(b)];
+}
+
+function applyColorMode(r, g, b, mode, intensity) {
+  let tr = r, tg = g, tb = b;
+  switch (mode) {
+    case 'grayscale': {
+      const l = 0.299*r + 0.587*g + 0.114*b;
+      tr = l; tg = l; tb = l;
+      break;
+    }
+    case 'sepia': {
+      tr = Math.min(255, r*0.393 + g*0.769 + b*0.189);
+      tg = Math.min(255, r*0.349 + g*0.686 + b*0.168);
+      tb = Math.min(255, r*0.272 + g*0.534 + b*0.131);
+      break;
+    }
+    case 'invert':
+      tr = 255 - r; tg = 255 - g; tb = 255 - b;
+      break;
+    case 'warm':
+      tr = Math.min(255, r * 1.18);
+      tg = Math.min(255, g * 1.05);
+      tb = Math.max(0,   b * 0.78);
+      break;
+    case 'cool':
+      tr = Math.max(0,   r * 0.80);
+      tg = Math.min(255, g * 1.02);
+      tb = Math.min(255, b * 1.22);
+      break;
+    case 'red':   tr = r; tg = 0; tb = 0; break;
+    case 'green': tr = 0; tg = g; tb = 0; break;
+    case 'blue':  tr = 0; tg = 0; tb = b; break;
+  }
+  return [
+    Math.round(r + (tr - r) * intensity),
+    Math.round(g + (tg - g) * intensity),
+    Math.round(b + (tb - b) * intensity),
+  ];
+}
+
+function renderDrostePixels(p, srcData, srcW, srcH, size, outH) {
+  const { alpha, gamma } = computeParams(p.N);
+  let effectiveAlpha = alpha;
+  if (p.transform === 'droste-swapped') {
+    effectiveAlpha = { re: 0, im: -Math.log(p.N) / TAU };
+  } else if (p.transform === 'power-explore') {
+    effectiveAlpha = { re: p.powerRe, im: p.powerIm };
+  }
+  // Reverse pipeline: conjugate α (negate imaginary part) to reverse spiral direction
+  // Keeps Re(α) = 1 so the map stays single-valued (no branch-cut artifacts)
+  if (p.reverse) {
+    effectiveAlpha = { re: effectiveAlpha.re, im: -effectiveAlpha.im };
+  }
+
+  const pixels = new Uint8ClampedArray(size * outH * 4);
+  const halfW = size / 2;
+  const halfH = outH / 2;
+  const logN = Math.log(p.N);
+  const PROGRESS_INTERVAL = 32; // report every N rows
+
+  for (let y = 0; y < outH; y++) {
+    if (y % PROGRESS_INTERVAL === 0) {
+      self.postMessage({ type: 'progress', value: y / outH });
+    }
+    for (let x = 0; x < size; x++) {
+      const wx = (x - halfW) / halfW * p.r2 * 2;
+      const wy = (y - halfH) / halfW * p.r2 * 2;
+
+      let w = { re: wx, im: wy };
+      const wAbs = C.abs(w);
+
+      const outerClip = p.outputShape === 'circle' ? wAbs > p.r2 * 2 : false;
+      if (wAbs < p.r1 || outerClip) {
+        const idx = (y * size + x) * 4;
+        pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
+        pixels[idx+3] = 255;
+        continue;
+      }
+
+      w = C.fromPolar(wAbs, C.arg(w) + p.rotate + p.cutOffset);
+      const logW = C.log(w);
+      const logWmod = { re: logW.re + p.zoom, im: logW.im + p.phase };
+      const z = C.exp(C.mul(effectiveAlpha, logWmod));
+      const logZ = C.log(z);
+
+      if (!isFinite(logZ.re) || !isFinite(logZ.im)) {
+        const idx = (y * size + x) * 4;
+        pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
+        pixels[idx+3] = 255;
+        continue;
+      }
+
+      let u = ((logZ.re * p.iterations / logN) % 1 + 1) % 1;
+      let v = ((logZ.im / TAU) % 1 + 1) % 1;
+
+      if (p.mirror) {
+        v = v < 0.5 ? v * 2 : (1 - v) * 2;
+      }
+
+      const [sr, sg, sb] = sampleImage(srcData, srcW, srcH, u, v);
+      const [cr, cg, cb] = applyColorMode(sr, sg, sb, p.colorMode, p.colorIntensity);
+
+      const idx = (y * size + x) * 4;
+      pixels[idx]   = cr;
+      pixels[idx+1] = cg;
+      pixels[idx+2] = cb;
+      pixels[idx+3] = 255;
+    }
+  }
+
+  return { pixels, effectiveAlpha, gamma };
+}
+
+function renderNonDrostePixels(p, srcData, srcW, srcH, size, outH) {
+  const pixels = new Uint8ClampedArray(size * outH * 4);
+  const halfW = size / 2;
+  const halfH = outH / 2;
+  const S = p.viewScale;
+  const PROGRESS_INTERVAL = 32;
+
+  for (let y = 0; y < outH; y++) {
+    if (y % PROGRESS_INTERVAL === 0) {
+      self.postMessage({ type: 'progress', value: y / outH });
+    }
+    for (let x = 0; x < size; x++) {
+      const wx = (x - halfW) / halfW * S;
+      const wy = (y - halfH) / halfW * S;
+      const w = { re: wx, im: wy };
+
+      let z;
+      switch (p.transform) {
+        case 'z2':  z = C.pow(w, { re: 0.5, im: 0 }); break;
+        case 'z3':  z = C.pow(w, { re: 1/3, im: 0 }); break;
+        case 'zn':  z = C.pow(w, { re: 1/p.znPower, im: 0 }); break;
+        case 'exp': z = C.log(w); break;
+        case 'log': z = C.exp(w); break;
+        case 'multiply': {
+          const c = C.fromPolar(p.multMag, p.multArg);
+          z = C.div(w, c);
+          break;
+        }
+        default: z = w;
+      }
+
+      if (!isFinite(z.re) || !isFinite(z.im)) {
+        const idx = (y * size + x) * 4;
+        pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
+        pixels[idx+3] = 255;
+        continue;
+      }
+
+      const u = (z.re + S) / (2 * S);
+      const v = (z.im + S) / (2 * S);
+
+      const [sr, sg, sb] = sampleImage(srcData, srcW, srcH, u, v);
+      const [cr, cg, cb] = applyColorMode(sr, sg, sb, p.colorMode, p.colorIntensity);
+
+      const idx = (y * size + x) * 4;
+      pixels[idx]   = cr;
+      pixels[idx+1] = cg;
+      pixels[idx+2] = cb;
+      pixels[idx+3] = 255;
+    }
+  }
+
+  return { pixels };
+}
+
+self.onmessage = function(e) {
+  const { params, srcW, srcH, size, outH, isDroste } = e.data;
+  // Reconstruct typed array from transferred ArrayBuffer
+  const srcData = new Uint8ClampedArray(e.data.srcData);
+  let result;
+  if (isDroste) {
+    result = renderDrostePixels(params, srcData, srcW, srcH, size, outH);
+  } else {
+    result = renderNonDrostePixels(params, srcData, srcW, srcH, size, outH);
+  }
+  // Transfer the pixel buffer (zero-copy)
+  self.postMessage({
+    type: 'done',
+    pixels: result.pixels.buffer,
+    effectiveAlpha: result.effectiveAlpha || null,
+    gamma: result.gamma || null,
+    isDroste: isDroste
+  }, [result.pixels.buffer]);
+};
+`;
+
+const _workerBlob = new Blob([_workerSource], { type: 'application/javascript' });
+const _workerURL  = URL.createObjectURL(_workerBlob);
+
+// Active worker reference — terminated on new render to cancel previous
+let _activeWorker = null;
+
 async function render() {
   if (!srcImageData) { setStatus('No source image — load one first'); return; }
+
+  // Cancel any in-flight render
+  if (_activeWorker) {
+    _activeWorker.terminate();
+    _activeWorker = null;
+  }
 
   const p = getParams();
   const isDrosteMode = p.transform === 'droste' || p.transform === 'droste-swapped' || p.transform === 'power-explore';
 
-  if (isDrosteMode) {
-    await renderDroste();
-  } else {
-    await renderNonDroste();
-  }
-}
-
-async function renderDroste() {
-  const myGen = ++renderGeneration;
-  const p = getParams();
-  const { alpha, gamma } = computeParams(p.N);
-
-  // Choose effective alpha based on transform variant:
-  // Standard α = (2πi + logN) / (2πi) uses the diagonal path in log-space.
-  // Swapped: α · 2πi = logN  →  α = logN/(2πi) = -i·logN/(2π)
-  //   → uses the horizontal path, "swapping the roles of rotation and scaling" (neat but wrong)
-  // Power-explore: α = user-specified complex number c = Re(c) + Im(c)·i
-  //   → "grab and move c" (transcript 36:42) — produces kaleidoscopic Droste-like images
-  let effectiveAlpha = alpha;
-  if (p.transform === 'droste-swapped') {
-    const logN = Math.log(p.N);
-    effectiveAlpha = { re: 0, im: -logN / TAU };
-  } else if (p.transform === 'power-explore') {
-    effectiveAlpha = { re: p.powerRe, im: p.powerIm };
-  }
-
   const out = document.getElementById('output');
   const size = p.resolution;
   const outH = p.outputShape === 'rect' ? Math.round(size * p.aspectRatio) : size;
@@ -742,183 +980,70 @@ async function renderDroste() {
   out.style.display = 'block';
   document.getElementById('placeholder').style.display = 'none';
   setStatus('Rendering…');
+  setProgress(0);
 
-  const ctx = out.getContext('2d');
-  const outData = ctx.createImageData(size, outH);
-  const pixels = outData.data;
+  // Copy source data for transfer (original stays intact for re-renders)
+  const srcCopy = new Uint8ClampedArray(srcImageData);
 
-  const halfW = size / 2;
-  const halfH = outH / 2;
-  const logN = Math.log(p.N);
+  const worker = new Worker(_workerURL);
+  _activeWorker = worker;
 
-  // Process in chunks to keep UI responsive
-  const chunkH = 16;
-  for (let y0 = 0; y0 < outH; y0 += chunkH) {
-    await new Promise(r => setTimeout(r, 0));
-    if (renderGeneration !== myGen) return;
-    setProgress(y0 / outH);
-
-    for (let y = y0; y < Math.min(y0+chunkH, outH); y++) {
-      for (let x = 0; x < size; x++) {
-        let wx = (x - halfW) / halfW * p.r2 * 2;
-        let wy = (y - halfH) / halfW * p.r2 * 2;
-
-        let w = { re: wx, im: wy };
-        const wAbs = C.abs(w);
-
-        const outerClip = p.outputShape === 'circle' ? wAbs > p.r2 * 2 : false;
-        if (wAbs < p.r1 || outerClip) {
-          const idx = (y * size + x) * 4;
-          pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
-          pixels[idx+3] = 255;
-          continue;
-        }
-
-        w = C.fromPolar(wAbs, C.arg(w) + p.rotate + p.cutOffset);
-
-        const logW = C.log(w);
-
-        const logWmod = {
-          re: logW.re + p.zoom,
-          im: logW.im + p.phase
-        };
-
-        const z = C.exp(C.mul(effectiveAlpha, logWmod));
-        const logZ = C.log(z);
-
-        if (!isFinite(logZ.re) || !isFinite(logZ.im)) {
-          const idx = (y * size + x) * 4;
-          pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
-          pixels[idx+3] = 255;
-          continue;
-        }
-
-        let u = ((logZ.re * p.iterations / logN) % 1 + 1) % 1;
-        let v = ((logZ.im / TAU) % 1 + 1) % 1;
-
-        if (p.mirror) {
-          v = v < 0.5 ? v * 2 : (1 - v) * 2;
-        }
-
-        const [sr, sg, sb] = sampleImage(srcImageData, srcWidth, srcHeight, u, v);
-        const [cr, cg, cb] = applyColorMode(sr, sg, sb, p.colorMode, p.colorIntensity);
-
-        const idx = (y * size + x) * 4;
-        pixels[idx]   = cr;
-        pixels[idx+1] = cg;
-        pixels[idx+2] = cb;
-        pixels[idx+3] = 255;
-      }
+  worker.onmessage = function(e) {
+    const msg = e.data;
+    if (msg.type === 'progress') {
+      setProgress(msg.value);
+      return;
     }
-  }
+    if (msg.type === 'done') {
+      // Worker is finished — clean up reference
+      if (_activeWorker === worker) _activeWorker = null;
+      worker.terminate();
 
-  ctx.putImageData(outData, 0, 0);
+      const pixelBuf = new Uint8ClampedArray(msg.pixels);
+      const ctx = out.getContext('2d');
+      const imgData = ctx.createImageData(size, outH);
+      imgData.data.set(pixelBuf);
+      ctx.putImageData(imgData, 0, 0);
 
-  if (p.showGrid) {
-    drawConformalGrid(ctx, size, outH, effectiveAlpha, p);
-  }
-
-  setProgress(1);
-
-  const gAbs = C.abs(gamma).toFixed(4);
-  const gArg = (C.arg(gamma) * 180 / Math.PI).toFixed(2);
-  const alphaImSign = effectiveAlpha.im < 0 ? '−' : '+';
-  const alphaImAbs  = Math.abs(effectiveAlpha.im).toFixed(4);
-  setStatus(`Done — N=${p.N} · |γ|=${gAbs} · arg(γ)=${gArg}° · α=(${effectiveAlpha.re.toFixed(4)} ${alphaImSign} ${alphaImAbs}i)`);
-
-  progressResetTimer = setTimeout(() => setProgress(0), 800);
-}
-
-async function renderNonDroste() {
-  const myGen = ++renderGeneration;
-  const p = getParams();
-
-  const out = document.getElementById('output');
-  const size = p.resolution;
-  const outH = p.outputShape === 'rect' ? Math.round(size * p.aspectRatio) : size;
-  out.width  = size;
-  out.height = outH;
-  out.style.display = 'block';
-  document.getElementById('placeholder').style.display = 'none';
-  setStatus('Rendering…');
-
-  const ctx = out.getContext('2d');
-  const outData = ctx.createImageData(size, outH);
-  const pixels = outData.data;
-
-  const halfW = size / 2;
-  const halfH = outH / 2;
-  const S = p.viewScale;
-
-  const chunkH = 16;
-  for (let y0 = 0; y0 < outH; y0 += chunkH) {
-    await new Promise(r => setTimeout(r, 0));
-    if (renderGeneration !== myGen) return;
-    setProgress(y0 / outH);
-
-    for (let y = y0; y < Math.min(y0+chunkH, outH); y++) {
-      for (let x = 0; x < size; x++) {
-        // Map output pixel to [-S, S] × [-S, S] in complex plane
-        const wx = (x - halfW) / halfW * S;
-        const wy = (y - halfH) / halfW * S;
-        const w = { re: wx, im: wy };
-
-        // Compute inverse transform to get z
-        let z;
-        switch (p.transform) {
-          case 'z2':
-            z = C.pow(w, { re: 0.5, im: 0 });
-            break;
-          case 'z3':
-            z = C.pow(w, { re: 1/3, im: 0 });
-            break;
-          case 'zn':
-            z = C.pow(w, { re: 1/p.znPower, im: 0 });
-            break;
-          case 'exp':
-            z = C.log(w);
-            break;
-          case 'log':
-            z = C.exp(w);
-            break;
-          case 'multiply': {
-            const c = C.fromPolar(p.multMag, p.multArg);
-            z = C.div(w, c);
-            break;
-          }
-          default:
-            z = w;
-        }
-
-        // Guard against NaN/Infinity from branch cuts, origin, etc.
-        if (!isFinite(z.re) || !isFinite(z.im)) {
-          const idx = (y * size + x) * 4;
-          pixels[idx] = pixels[idx+1] = pixels[idx+2] = 10;
-          pixels[idx+3] = 255;
-          continue;
-        }
-
-        // Map z to source UV: u = (z.re + S) / (2*S), v = (z.im + S) / (2*S)
-        const u = (z.re + S) / (2 * S);
-        const v = (z.im + S) / (2 * S);
-
-        const [sr, sg, sb] = sampleImage(srcImageData, srcWidth, srcHeight, u, v);
-        const [cr, cg, cb] = applyColorMode(sr, sg, sb, p.colorMode, p.colorIntensity);
-
-        const idx = (y * size + x) * 4;
-        pixels[idx]   = cr;
-        pixels[idx+1] = cg;
-        pixels[idx+2] = cb;
-        pixels[idx+3] = 255;
+      // Grid overlay runs on main thread (needs canvas context)
+      if (msg.isDroste && p.showGrid && msg.effectiveAlpha) {
+        drawConformalGrid(ctx, size, outH, msg.effectiveAlpha, p);
       }
+
+      setProgress(1);
+
+      // Status message
+      if (msg.isDroste && msg.gamma && msg.effectiveAlpha) {
+        const gAbs = C.abs(msg.gamma).toFixed(4);
+        const gArg = (C.arg(msg.gamma) * 180 / Math.PI).toFixed(2);
+        const alphaImSign = msg.effectiveAlpha.im < 0 ? '−' : '+';
+        const alphaImAbs  = Math.abs(msg.effectiveAlpha.im).toFixed(4);
+        setStatus(`Done — N=${p.N} · |γ|=${gAbs} · arg(γ)=${gArg}° · α=(${msg.effectiveAlpha.re.toFixed(4)} ${alphaImSign} ${alphaImAbs}i)`);
+      } else {
+        setStatus(`Done — transform: ${p.transform}`);
+      }
+
+      progressResetTimer = setTimeout(() => setProgress(0), 800);
     }
-  }
+  };
 
-  ctx.putImageData(outData, 0, 0);
-  setProgress(1);
-  setStatus(`Done — transform: ${p.transform}`);
+  worker.onerror = function(err) {
+    if (_activeWorker === worker) _activeWorker = null;
+    worker.terminate();
+    setStatus('Render failed — ' + (err.message || 'worker error'));
+    setProgress(0);
+  };
 
-  progressResetTimer = setTimeout(() => setProgress(0), 800);
+  // Post work to worker — transfer the srcCopy buffer (zero-copy send)
+  worker.postMessage({
+    params: p,
+    srcData: srcCopy.buffer,
+    srcW: srcWidth,
+    srcH: srcHeight,
+    size: size,
+    outH: outH,
+    isDroste: isDrosteMode
+  }, [srcCopy.buffer]);
 }
 
 function drawConformalGrid(ctx, size, outH, alpha, p) {
@@ -1140,12 +1265,15 @@ function generatePlainGrid() {
 }
 
 function updateSourceInfo(usesLogPolar) {
-  const infoBox = document.querySelector('#ctrl-panel > section:first-child .math-box');
-  if (!infoBox) return;
+  const modeLabel = document.getElementById('source-mode-label');
+  const modeDesc  = document.getElementById('source-mode-desc');
+  if (!modeLabel || !modeDesc) return;
   if (usesLogPolar) {
-    infoBox.innerHTML = 'Source is sampled in <span class="highlight">log-space</span>: u = scale axis (logN period), v = angular axis (2π period). For genuine Droste nesting, source should repeat at matching scale across its width.';
+    modeLabel.textContent = 'log-space';
+    modeDesc.textContent  = 'u = scale axis (logN period), v = angular axis (2π period). For genuine Droste nesting, source should repeat at matching scale across its width.';
   } else {
-    infoBox.innerHTML = 'Source is sampled in <span class="highlight">Cartesian</span> coordinates: the complex plane [−S, S]² maps directly onto the source image. Grid patterns show conformal distortion clearly.';
+    modeLabel.textContent = 'Cartesian';
+    modeDesc.textContent  = 'coordinates: the complex plane [−S, S]² maps directly onto the source image. Grid patterns show conformal distortion clearly.';
   }
 }
 
@@ -1210,13 +1338,22 @@ function updateTransformVisibility() {
   updateSourceInfo(usesLogPolar);
 }
 
+// Debounced render — prevents hammering the render loop while dragging sliders
+let _debouncedRenderTimer = null;
+function debouncedRender(delayMs) {
+  clearTimeout(_debouncedRenderTimer);
+  _debouncedRenderTimer = setTimeout(() => {
+    if (document.getElementById('chk-auto').checked) render();
+  }, delayMs || 150);
+}
+
 function wireSlider(id, display, fmt) {
   const sl = document.getElementById(id);
   const dv = document.getElementById(display);
   sl.addEventListener('input', () => {
     dv.textContent = fmt(sl.value);
     updateMathDisplay();
-    if (document.getElementById('chk-auto').checked) render();
+    debouncedRender(150);
   });
 }
 
@@ -1259,7 +1396,7 @@ function fmtCut(val) {
 }
 slCut.addEventListener('input', () => {
   vCut.textContent = fmtCut(slCut.value);
-  if (document.getElementById('chk-auto').checked) render();
+  debouncedRender(150);
 });
 
 // Color select and aspect select trigger re-render in auto mode
@@ -1267,6 +1404,17 @@ document.getElementById('sel-color').addEventListener('change', () => {
   if (document.getElementById('chk-auto').checked) render();
 });
 document.getElementById('sel-aspect').addEventListener('change', () => {
+  if (document.getElementById('chk-auto').checked) render();
+});
+
+// Checkboxes — trigger re-render in auto mode
+document.getElementById('chk-mirror').addEventListener('change', () => {
+  if (document.getElementById('chk-auto').checked) render();
+});
+document.getElementById('chk-reverse').addEventListener('change', () => {
+  if (document.getElementById('chk-auto').checked) render();
+});
+document.getElementById('chk-grid').addEventListener('change', () => {
   if (document.getElementById('chk-auto').checked) render();
 });
 
@@ -1285,10 +1433,23 @@ rowAspect.classList.add('row-hidden');
 
 document.getElementById('btn-render').addEventListener('click', render);
 
+// Helper: ensure a Droste-family transform is active for log-polar demo sources
+function ensureDrosteMode() {
+  const sel = document.getElementById('sel-transform');
+  const mode = sel.value;
+  if (mode !== 'droste' && mode !== 'droste-swapped' && mode !== 'power-explore') {
+    sel.value = 'droste';
+    updateTransformVisibility();
+  }
+}
+
 document.getElementById('btn-demo').addEventListener('click', () => {
   const src = generateLogSpaceBands();
   srcImageData = src.data; srcWidth = src.w; srcHeight = src.h;
   document.getElementById('img-name').textContent = '[ log-space bands — 512×512 ]';
+  ensureDrosteMode();
+  applyPreset({ 'sl-scale': 256, 'sl-r1': 0.005, 'sl-r2': 1.0, 'sl-iter': 4,
+                'sl-phase': 0, 'sl-zoom': 0, 'sl-rotate': 0, 'sl-cut': 1.5708 });
   showInputImage();
   render();
 });
@@ -1297,6 +1458,9 @@ document.getElementById('btn-escher-grid').addEventListener('click', () => {
   const src = generateEscherScene();
   srcImageData = src.data; srcWidth = src.w; srcHeight = src.h;
   document.getElementById('img-name').textContent = '[ Escher scene — 512×512 ]';
+  ensureDrosteMode();
+  applyPreset({ 'sl-scale': 256, 'sl-r1': 0.005, 'sl-r2': 1.0, 'sl-iter': 4,
+                'sl-phase': 0, 'sl-zoom': 0, 'sl-rotate': 0, 'sl-cut': 1.5708 });
   showInputImage();
   render();
 });
@@ -1305,6 +1469,9 @@ document.getElementById('btn-plain-grid').addEventListener('click', () => {
   const src = generatePlainGrid();
   srcImageData = src.data; srcWidth = src.w; srcHeight = src.h;
   document.getElementById('img-name').textContent = '[ plain grid — 512×512 ]';
+  ensureDrosteMode();
+  applyPreset({ 'sl-scale': 16, 'sl-r1': 0.01, 'sl-r2': 1.0, 'sl-iter': 3,
+                'sl-phase': 0, 'sl-zoom': 0, 'sl-rotate': 0, 'sl-cut': 1.5708 });
   showInputImage();
   render();
 });
@@ -1318,21 +1485,27 @@ function applyPreset(params, switchTransform) {
   }
   for (const [id, val] of Object.entries(params)) {
     const el = document.getElementById(id);
-    if (el) el.value = val;
+    if (!el) continue;
+    if (el.type === 'checkbox') { el.checked = !!val; }
+    else { el.value = val; }
   }
   // Refresh all display values
   const refreshMap = {
-    'sl-scale':      { dv: 'v-scale',      fmt: v => parseInt(v) },
-    'sl-r1':         { dv: 'v-r1',         fmt: v => parseFloat(v).toFixed(3) },
-    'sl-r2':         { dv: 'v-r2',         fmt: v => parseFloat(v).toFixed(3) },
-    'sl-iter':       { dv: 'v-iter',       fmt: v => parseInt(v) },
-    'sl-rotate':     { dv: 'v-rotate',     fmt: v => parseFloat(v).toFixed(1) + '°' },
-    'sl-view-scale': { dv: 'v-view-scale', fmt: v => parseFloat(v).toFixed(2) },
-    'sl-power-re':   { dv: 'v-power-re',   fmt: v => parseFloat(v).toFixed(2) },
-    'sl-power-im':   { dv: 'v-power-im',   fmt: v => parseFloat(v).toFixed(2) },
-    'sl-zn-power':   { dv: 'v-zn-power',   fmt: v => parseFloat(v).toFixed(1) },
-    'sl-mult-mag':   { dv: 'v-mult-mag',   fmt: v => parseFloat(v).toFixed(2) },
-    'sl-mult-arg':   { dv: 'v-mult-arg',   fmt: v => parseFloat(v).toFixed(1) + '°' },
+    'sl-scale':           { dv: 'v-scale',           fmt: v => parseInt(v) },
+    'sl-r1':              { dv: 'v-r1',              fmt: v => parseFloat(v).toFixed(3) },
+    'sl-r2':              { dv: 'v-r2',              fmt: v => parseFloat(v).toFixed(3) },
+    'sl-iter':            { dv: 'v-iter',            fmt: v => parseInt(v) },
+    'sl-rotate':          { dv: 'v-rotate',          fmt: v => parseFloat(v).toFixed(1) + '°' },
+    'sl-phase':           { dv: 'v-phase',           fmt: v => parseFloat(v).toFixed(2) },
+    'sl-zoom':            { dv: 'v-zoom',            fmt: v => parseFloat(v).toFixed(2) },
+    'sl-res':             { dv: 'v-res',             fmt: v => parseInt(v) },
+    'sl-color-intensity': { dv: 'v-color-intensity', fmt: v => parseFloat(v).toFixed(2) },
+    'sl-view-scale':      { dv: 'v-view-scale',      fmt: v => parseFloat(v).toFixed(2) },
+    'sl-power-re':        { dv: 'v-power-re',        fmt: v => parseFloat(v).toFixed(2) },
+    'sl-power-im':        { dv: 'v-power-im',        fmt: v => parseFloat(v).toFixed(2) },
+    'sl-zn-power':        { dv: 'v-zn-power',        fmt: v => parseFloat(v).toFixed(1) },
+    'sl-mult-mag':        { dv: 'v-mult-mag',        fmt: v => parseFloat(v).toFixed(2) },
+    'sl-mult-arg':        { dv: 'v-mult-arg',        fmt: v => parseFloat(v).toFixed(1) + '°' },
   };
   for (const [sid, cfg] of Object.entries(refreshMap)) {
     if (params[sid] !== undefined) {
@@ -1357,6 +1530,13 @@ document.getElementById('btn-open').addEventListener('click', () => {
 });
 document.getElementById('btn-annulus').addEventListener('click', () => {
   applyPreset({ 'sl-r1': 0.15, 'sl-r2': 1.0, 'sl-iter': 3 });
+});
+document.getElementById('btn-print-gallery').addEventListener('click', () => {
+  applyPreset({
+    'sl-scale': 256, 'sl-r1': 0.005, 'sl-r2': 1.0, 'sl-iter': 3,
+    'sl-phase': 0, 'sl-zoom': 0, 'sl-rotate': 0, 'sl-cut': 1.5708,
+    'chk-mirror': true, 'sel-color': 'none', 'sl-color-intensity': 1
+  });
 });
 
 // Power-explore presets
@@ -1401,11 +1581,15 @@ document.getElementById('btn-cp-scale2x').addEventListener('click', () => {
 
 document.getElementById('btn-save').addEventListener('click', () => {
   const out = document.getElementById('output');
-  if (out.style.display === 'none') return;
+  if (out.style.display === 'none') {
+    setStatus('Nothing to save — render an image first');
+    return;
+  }
   const a = document.createElement('a');
   a.download = 'droste-escher.png';
   a.href = out.toDataURL('image/png');
   a.click();
+  setStatus('PNG saved');
 });
 
 document.getElementById('btn-reset').addEventListener('click', () => {
@@ -1430,6 +1614,10 @@ document.getElementById('btn-reset').addEventListener('click', () => {
   shapeBtns.forEach(b => b.classList.remove('active'));
   document.querySelector('[data-shape="circle"]').classList.add('active');
   document.getElementById('row-aspect').classList.add('row-hidden');
+  // Reset checkboxes to defaults
+  document.getElementById('chk-mirror').checked = true;
+  document.getElementById('chk-reverse').checked = false;
+  document.getElementById('chk-grid').checked = false;
   // Reset transform-specific sliders
   document.getElementById('sel-transform').value = 'droste';
   document.getElementById('sl-view-scale').value = 1;
@@ -1446,6 +1634,8 @@ document.getElementById('btn-reset').addEventListener('click', () => {
   document.getElementById('v-mult-arg').textContent = '0.0°';
   updateTransformVisibility();
   updateMathDisplay();
+  // Re-render with reset params (respects whether source is loaded)
+  if (srcImageData) render();
 });
 
 // File drop / upload
@@ -1475,6 +1665,10 @@ function loadFile(file) {
     img.onload = () => {
       const maxDim = 1024;
       let w = img.width, h = img.height;
+      if (w === 0 || h === 0) {
+        setStatus('Image has zero dimensions — ' + file.name + ' may be an unsupported format (e.g. SVG without intrinsic size)');
+        return;
+      }
       if (w > maxDim || h > maxDim) {
         const s = maxDim / Math.max(w, h);
         w = Math.round(w * s); h = Math.round(h * s);
@@ -1483,13 +1677,17 @@ function loadFile(file) {
       c.width = w; c.height = h;
       const ctx = c.getContext('2d');
       ctx.drawImage(img, 0, 0, w, h);
-      const id = ctx.getImageData(0, 0, w, h);
-      srcImageData = id.data;
-      srcWidth = w;
-      srcHeight = h;
-      document.getElementById('img-name').textContent = `[ ${file.name} — ${w}×${h} ]`;
-      showInputImage();
-      render();
+      try {
+        const id = ctx.getImageData(0, 0, w, h);
+        srcImageData = id.data;
+        srcWidth = w;
+        srcHeight = h;
+        document.getElementById('img-name').textContent = `[ ${file.name} — ${w}×${h} ]`;
+        showInputImage();
+        render();
+      } catch (err) {
+        setStatus('Cannot read pixel data — ' + file.name + ' may be tainted (SVG with external refs or CORS issue)');
+      }
     };
     img.src = e.target.result;
   };
